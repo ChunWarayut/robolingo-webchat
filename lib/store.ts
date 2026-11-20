@@ -151,21 +151,37 @@ export async function listConversations(limit = 50): Promise<Conversation[]> {
 /**
  * อ่านข้อความแบบ cursor = จำนวนข้อความที่ client มีอยู่แล้ว
  * ทำให้ polling ดึงเฉพาะส่วนที่เพิ่มมาจริง ๆ และไม่ต้องกังวลเรื่อง timestamp ชนกัน
+ *
+ * cursor ที่คืนกลับคำนวณจากจำนวนที่อ่านมาได้จริง ไม่ได้ถาม LLEN แยกอีกคำสั่ง
+ * เพราะถ้าถามแยก ข้อความที่แทรกเข้ามาระหว่างสองคำสั่งจะถูกส่งไปแล้วแต่ไม่ถูกนับ
+ * ทำให้ cursor ของ client ตามหลังข้อมูลที่ถืออยู่ (และประหยัดไปอีกหนึ่งคำสั่งต่อรอบ)
  */
 export async function getMessages(
   userId: string,
   cursor = 0,
 ): Promise<{ messages: Message[]; cursor: number }> {
-  const r = redis();
-  const total = await r.llen(msgKey(userId));
-  if (cursor >= total) return { messages: [], cursor: total };
+  // LRANGE ตีความ index ติดลบว่า "นับจากท้ายรายการ" ซึ่งคนละความหมายกับ cursor ของเรา
+  // ถ้าปล่อยค่าติดลบผ่านไป จะได้ข้อความแค่ไม่กี่อันท้ายแล้วดัน cursor ไปสุด
+  // ประวัติก่อนหน้าจะหายไปทั้ง session เศษทศนิยมก็ใช้เป็น index ไม่ได้เช่นกัน
+  const start = Number.isFinite(cursor) ? Math.max(0, Math.floor(cursor)) : 0;
 
-  const raw = await r.lrange<string | Message>(msgKey(userId), cursor, -1);
+  const raw = await redis().lrange<string | Message>(msgKey(userId), start, -1);
+
   const messages = raw
-    .map((item) => (typeof item === "string" ? (JSON.parse(item) as Message) : item))
+    .map((item) => {
+      if (typeof item !== "string") return item;
+      try {
+        return JSON.parse(item) as Message;
+      } catch {
+        // แถวเดียวเสียต้องไม่ทำให้ทั้งเธรดอ่านไม่ได้
+        return null;
+      }
+    })
     .filter((m): m is Message => Boolean(m?.id));
 
-  return { messages, cursor: total };
+  // ขยับตามจำนวนแถวที่อ่านมา ไม่ใช่จำนวนที่ parse ผ่าน ไม่งั้นแถวที่เสีย
+  // จะถูกดึงซ้ำทุกรอบไม่จบไม่สิ้น
+  return { messages, cursor: start + raw.length };
 }
 
 /* ---------- สถานะกำลังพิมพ์ ----------
