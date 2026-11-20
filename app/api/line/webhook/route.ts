@@ -38,24 +38,54 @@ function describeNonText(messageType: string): string {
  * เก็บลงประวัติด้วย เพื่อให้เห็นข้อความเดียวกันทั้งในแอป LINE และในเว็บแชท
  */
 async function sendWelcome(userId: string, replyToken?: string): Promise<void> {
+  let delivered = false;
+
   if (replyToken) {
     try {
+      // ครอบเฉพาะการส่ง ไม่รวมการบันทึก ไม่งั้นถ้าบันทึกพลาดหลังส่งสำเร็จแล้ว
+      // จะตกไป push ซ้ำ ผู้ใช้ได้ข้อความต้อนรับสองรอบ
       await replyMessage(replyToken, WELCOME);
-      await appendMessage(userId, { from: "admin", via: "line", text: WELCOME });
-      return;
+      delivered = true;
     } catch (error) {
       console.error("[line/webhook] reply ข้อความต้อนรับไม่สำเร็จ จะลองใหม่ด้วย push:", error);
     }
   }
 
-  await pushMessage(userId, WELCOME);
+  if (!delivered) await pushMessage(userId, WELCOME);
   await appendMessage(userId, { from: "admin", via: "line", text: WELCOME });
 }
 
+/** คืน userId ของ event ถ้าเป็นแชท 1:1 — group/room ไม่อยู่ในขอบเขตของแบบทดสอบ */
+function userIdOf(event: LineEvent): string | undefined {
+  return event.source?.type === "user" ? event.source.userId : undefined;
+}
+
+/**
+ * จับ event ของคนเดียวกันไว้ด้วยกัน เพื่อให้ประมวลผลเรียงทีละอัน
+ *
+ * LINE ส่งหลาย event มาใน request เดียวได้ ถ้าปล่อยให้ของคนเดียวกันวิ่งขนานกัน
+ * จะชนกันที่ hash ของห้องนั้น เช่น follow กับ message ที่มาพร้อมกันตอนปลดบล็อก
+ * ตัวที่เสร็จทีหลังจะเขียนสถานะเก่าทับของใหม่
+ * ส่วนคนละคนไม่แตะข้อมูลเดียวกัน จึงยังวิ่งขนานกันได้
+ */
+function groupByUser(events: LineEvent[]): LineEvent[][] {
+  const groups = new Map<string, LineEvent[]>();
+
+  for (const event of events) {
+    const userId = userIdOf(event);
+    if (!userId) continue;
+
+    const existing = groups.get(userId);
+    if (existing) existing.push(event);
+    else groups.set(userId, [event]);
+  }
+
+  return [...groups.values()];
+}
+
 async function handleEvent(event: LineEvent): Promise<void> {
-  // รองรับแชท 1:1 เท่านั้น — group/room ไม่อยู่ในขอบเขตของแบบทดสอบ
-  if (event.source?.type !== "user" || !event.source.userId) return;
-  const userId = event.source.userId;
+  const userId = userIdOf(event);
+  if (!userId) return;
 
   switch (event.type) {
     case "follow": {
@@ -114,7 +144,13 @@ export async function POST(req: Request) {
   );
 
   // ปุ่ม Verify ใน LINE console ส่ง events ว่างมา — ต้องตอบ 200
-  const results = await Promise.allSettled(events.map(handleEvent));
+  const results = await Promise.allSettled(
+    groupByUser(events).map(async (group) => {
+      for (const event of group) {
+        await handleEvent(event);
+      }
+    }),
+  );
   for (const result of results) {
     if (result.status === "rejected") {
       console.error("[line/webhook] จัดการ event ไม่สำเร็จ:", result.reason);

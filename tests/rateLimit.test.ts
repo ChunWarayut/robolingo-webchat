@@ -17,14 +17,16 @@ describe("hitRateLimit", () => {
     ttl.mockResolvedValue(120);
   });
 
-  it("ตั้ง TTL เฉพาะครั้งแรก หน้าต่างเวลาจึงเริ่มจากความพยายามครั้งแรก", async () => {
+  it("สั่งตั้ง TTL แบบ NX ทุกครั้ง เพื่อให้ key ที่ TTL หลุดไปกู้คืนได้เอง", async () => {
     incr.mockResolvedValue(1);
     await hitRateLimit("k", 10, 600);
-    expect(expire).toHaveBeenCalledWith("k", 600);
+    expect(expire).toHaveBeenCalledWith("k", 600, "NX");
 
+    // ครั้งต่อไปก็ยังสั่ง เพราะ NX ทำให้ Redis ไม่ขยับ TTL ที่ตั้งไว้แล้ว
+    // หน้าต่างเวลาจึงยังเริ่มนับจากความพยายามครั้งแรกเหมือนเดิม
     incr.mockResolvedValue(2);
     await hitRateLimit("k", 10, 600);
-    expect(expire).toHaveBeenCalledTimes(1);
+    expect(expire).toHaveBeenCalledTimes(2);
   });
 
   it("ยังผ่านเมื่อนับได้เท่ากับเพดานพอดี", async () => {

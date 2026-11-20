@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 /** Redis จำลองแบบเก็บใน memory เท่าที่ ensureConversation ใช้ */
 const hashes = new Map<string, Record<string, string>>();
 
+const zadd = vi.fn(async () => 1);
+
 vi.mock("@/lib/redis", () => ({
   redis: () => ({
     hgetall: async (key: string) => hashes.get(key) ?? null,
@@ -12,7 +14,7 @@ vi.mock("@/lib/redis", () => ({
       hashes.set(key, current);
       return 1;
     },
-    zadd: async () => 1,
+    zadd,
   }),
 }));
 
@@ -27,6 +29,7 @@ const USER = "U00000000000000000000000000000001";
 describe("ensureConversation กับสถานะการติดตาม", () => {
   beforeEach(() => {
     hashes.clear();
+    zadd.mockClear();
   });
 
   it("ห้องใหม่ถือว่ายังติดตามอยู่", async () => {
@@ -43,6 +46,32 @@ describe("ensureConversation กับสถานะการติดตาม
 
     expect(afterWebMessage.followed).toBe(false);
     expect((await getConversation(USER))?.followed).toBe(false);
+  });
+
+  it("ไม่เขียนทับตัวนับที่ยังไม่ได้อ่านและข้อความล่าสุดของห้องเดิม", async () => {
+    await ensureConversation(USER, { displayName: "ก" });
+
+    // จำลองว่า appendMessage ทำงานแทรกเข้ามาระหว่างที่เราถืออ่านค่าเก่าไว้
+    const row = hashes.get(`conv:${USER}`)!;
+    row.unread = "3";
+    row.lastMessage = "ข้อความล่าสุด";
+    row.lastMessageAt = "999";
+
+    await ensureConversation(USER, { displayName: "ก" });
+
+    const after = hashes.get(`conv:${USER}`)!;
+    expect(after.unread).toBe("3");
+    expect(after.lastMessage).toBe("ข้อความล่าสุด");
+    expect(after.lastMessageAt).toBe("999");
+  });
+
+  it("ขยับลำดับใน index เฉพาะตอนสร้างห้องใหม่ ไม่ใช่ทุกครั้งที่ถูกเรียก", async () => {
+    await ensureConversation(USER, { displayName: "ก" });
+    expect(zadd).toHaveBeenCalledTimes(1);
+
+    await ensureConversation(USER, { displayName: "ก" });
+    await ensureConversation(USER, undefined, true);
+    expect(zadd).toHaveBeenCalledTimes(1);
   });
 
   it("กลับมาติดตามเมื่อได้ follow event เท่านั้น", async () => {

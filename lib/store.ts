@@ -51,29 +51,49 @@ export async function ensureConversation(
     }
   }
 
-  const conversation: Conversation = {
+  const now = Date.now();
+
+  /**
+   * เขียนกลับเฉพาะ field ที่ฟังก์ชันนี้เป็นเจ้าของ (ตัวตนของผู้ใช้) เท่านั้น
+   *
+   * unread / lastMessage / lastMessageAt เป็นของ appendMessage กับ markRead
+   * ถ้าเขียนค่าที่อ่านมาตั้งแต่ต้นฟังก์ชันกลับไปด้วย จะกลายเป็น read-modify-write
+   * ที่ทับงานของคนอื่นที่เกิดขึ้นระหว่างนั้น เช่น ข้อความที่เพิ่งเข้ามาจะถูกย้อนกลับ
+   * และตัวนับที่เพิ่ง hincrby จะหายไป
+   */
+  const fields: Record<string, string | number> = {
     id: userId,
     displayName: displayName || "ผู้ใช้ LINE",
     pictureUrl,
-    lastMessage: existing?.lastMessage ?? "",
-    lastMessageAt: existing?.lastMessageAt ?? Date.now(),
-    unread: existing?.unread ?? 0,
-    // ห้องใหม่ถือว่าติดตามอยู่ (เรารู้จักเขาเพราะเขาทักมา) ห้องเดิมใช้ค่าที่บันทึกไว้
-    followed: markFollowed || (existing?.followed ?? true),
   };
 
-  await r.hset(convKey(userId), {
-    id: conversation.id,
-    displayName: conversation.displayName,
-    pictureUrl: conversation.pictureUrl,
-    lastMessage: conversation.lastMessage,
-    lastMessageAt: conversation.lastMessageAt,
-    unread: conversation.unread,
-    followed: conversation.followed ? "1" : "0",
-  });
-  await r.zadd(INDEX_KEY, { score: conversation.lastMessageAt, member: userId });
+  // สถานะการติดตามก็เช่นกัน — แตะเฉพาะตอนสร้างห้องใหม่หรือได้ follow event จริง
+  // ไม่งั้น unfollow ที่เพิ่งมาถึงจะถูกทับด้วยค่าเก่าที่เราอ่านค้างไว้
+  if (!existing || markFollowed) fields.followed = "1";
 
-  return conversation;
+  if (!existing) {
+    fields.lastMessage = "";
+    fields.lastMessageAt = now;
+    fields.unread = 0;
+  }
+
+  await r.hset(convKey(userId), fields);
+
+  // ห้องเดิมอยู่ใน index อยู่แล้ว และ appendMessage เป็นคนขยับลำดับตามข้อความล่าสุด
+  // ถ้า zadd ทุกครั้งที่นี่ ลำดับจะถูกย้อนกลับไปตามค่าที่อ่านมาค้างไว้
+  if (!existing) {
+    await r.zadd(INDEX_KEY, { score: now, member: userId });
+  }
+
+  return {
+    id: userId,
+    displayName: String(fields.displayName),
+    pictureUrl,
+    lastMessage: existing?.lastMessage ?? "",
+    lastMessageAt: existing?.lastMessageAt ?? now,
+    unread: existing?.unread ?? 0,
+    followed: markFollowed || (existing?.followed ?? true),
+  };
 }
 
 export async function appendMessage(

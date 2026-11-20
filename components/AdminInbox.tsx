@@ -101,7 +101,10 @@ export default function AdminInbox() {
       // ข้ามรอบนี้ไป
     } finally {
       loadingMessagesRef.current = false;
-      setLoadingMessages(false);
+      // ปิด skeleton เฉพาะเมื่อ response นี้เป็นของห้องที่กำลังดูอยู่จริง
+      // ไม่งั้น response ของห้องเก่าจะไปปิด skeleton ของห้องที่เพิ่งกดเลือก
+      // แล้วโชว์ "ยังไม่มีข้อความ" ทั้งที่ยังไม่ได้ดึงอะไรมาเลย
+      if (selectedRef.current === id) setLoadingMessages(false);
     }
   }, []);
 
@@ -130,6 +133,10 @@ export default function AdminInbox() {
     const id = selectedRef.current;
     if (!id) return;
 
+    // ถ้าสลับไปห้องอื่นแล้วระหว่างรอ response ห้ามแตะ state ต่อ
+    // เพราะ messages ตอนนี้เป็นของอีกห้องหนึ่ง ข้อความที่ส่งถึง A จะไปโผล่ในห้อง B
+    const stillOnSameConversation = () => selectedRef.current === id;
+
     try {
       const res = await fetch("/api/admin/send", {
         method: "POST",
@@ -139,15 +146,22 @@ export default function AdminInbox() {
 
       if (!res.ok) {
         const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        if (!stillOnSameConversation()) return;
+
         setSendError(data?.error ?? "ส่งข้อความไม่สำเร็จ");
         setMessages((previous) => markFailed(previous, pending.id));
         return;
       }
 
       const data = (await res.json()) as { message: Message };
-      setMessages((previous) => settlePending(previous, pending.id, data.message));
+      // ส่งสำเร็จแล้ว รายการห้องต้องอัปเดตไม่ว่าจะยังดูห้องเดิมอยู่หรือไม่
       void pollConversations();
+      if (!stillOnSameConversation()) return;
+
+      setMessages((previous) => settlePending(previous, pending.id, data.message));
     } catch {
+      if (!stillOnSameConversation()) return;
+
       setSendError("เชื่อมต่อไม่ได้ — ข้อความยังไม่ถูกส่ง");
       setMessages((previous) => markFailed(previous, pending.id));
     }

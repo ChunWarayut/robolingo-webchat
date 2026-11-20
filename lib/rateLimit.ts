@@ -24,9 +24,11 @@ export async function hitRateLimit(
     const client = redis();
     const count = await client.incr(key);
 
-    if (count === 1) {
-      await client.expire(key, windowSeconds);
-    }
+    // ใส่ NX ไว้: Redis จะตั้ง TTL ให้เฉพาะตอนที่ key ยังไม่มี TTL
+    // เรียกทุกครั้งแทนที่จะเรียกเฉพาะครั้งแรก เพราะถ้าครั้งแรกพลาดไปครั้งเดียว
+    // key จะไม่มีวันหมดอายุ แล้วพอนับเกินเพดานก็จะได้ 429 ตลอดไปโดยกู้คืนไม่ได้
+    // (ทางกู้คืนปกติคือ resetRateLimit ตอนเข้าสำเร็จ ซึ่งถูกด่านนี้กั้นไว้ก่อนแล้ว)
+    await client.expire(key, windowSeconds, "NX");
 
     const ttl = count > limit ? await client.ttl(key) : 0;
 
