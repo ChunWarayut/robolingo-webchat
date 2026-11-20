@@ -29,6 +29,12 @@ function toConversation(id: string, raw: Record<string, unknown> | null): Conver
 export async function ensureConversation(
   userId: string,
   profileHint?: { displayName?: string; pictureUrl?: string },
+  /**
+   * ตั้งสถานะ "ยังติดตามอยู่" เป็นจริง — ส่งมาเฉพาะตอนได้ follow event เท่านั้น
+   * ที่เหลือต้องรักษาค่าเดิมไว้ ไม่งั้นข้อความจากเว็บแชทหรือการล็อกอินของคนที่บล็อก OA ไปแล้ว
+   * จะเขียนทับสถานะจนดูเหมือนเขายังติดตามอยู่
+   */
+  markFollowed = false,
 ): Promise<Conversation> {
   const r = redis();
   const existing = toConversation(userId, await r.hgetall(convKey(userId)));
@@ -52,7 +58,8 @@ export async function ensureConversation(
     lastMessage: existing?.lastMessage ?? "",
     lastMessageAt: existing?.lastMessageAt ?? Date.now(),
     unread: existing?.unread ?? 0,
-    followed: true,
+    // ห้องใหม่ถือว่าติดตามอยู่ (เรารู้จักเขาเพราะเขาทักมา) ห้องเดิมใช้ค่าที่บันทึกไว้
+    followed: markFollowed || (existing?.followed ?? true),
   };
 
   await r.hset(convKey(userId), {
@@ -62,7 +69,7 @@ export async function ensureConversation(
     lastMessage: conversation.lastMessage,
     lastMessageAt: conversation.lastMessageAt,
     unread: conversation.unread,
-    followed: "1",
+    followed: conversation.followed ? "1" : "0",
   });
   await r.zadd(INDEX_KEY, { score: conversation.lastMessageAt, member: userId });
 

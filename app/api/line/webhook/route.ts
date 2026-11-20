@@ -59,7 +59,7 @@ async function handleEvent(event: LineEvent): Promise<void> {
 
   switch (event.type) {
     case "follow": {
-      await ensureConversation(userId);
+      await ensureConversation(userId, undefined, true);
       await sendWelcome(userId, event.replyToken);
       return;
     }
