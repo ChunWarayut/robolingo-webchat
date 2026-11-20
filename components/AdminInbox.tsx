@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Conversation, Message } from "@/lib/types";
 import Composer from "./Composer";
 import MessageList from "./MessageList";
+import { mergeMessages } from "./mergeMessages";
 
 const POLL_MS = 2000;
 
@@ -26,8 +27,13 @@ export default function AdminInbox() {
   const cursor = useRef(0);
   // เก็บ id ที่เลือกไว้ใน ref ด้วย เพื่อให้ interval เดิมอ่านค่าล่าสุดได้
   const selectedRef = useRef<string | null>(null);
+  // กันไม่ให้ request ซ้อนกัน: ถ้ารอบก่อนยังไม่ตอบ ทั้งคู่จะอ่าน cursor ค่าเดิมแล้วต่อท้ายข้อความซ้ำ
+  const loadingMessages = useRef(false);
+  const loadingConversations = useRef(false);
 
   const pollConversations = useCallback(async () => {
+    if (loadingConversations.current) return;
+    loadingConversations.current = true;
     try {
       const res = await fetch("/api/admin/conversations", { cache: "no-store" });
       if (!res.ok) {
@@ -44,12 +50,15 @@ export default function AdminInbox() {
       setConnectionError(null);
     } catch {
       setConnectionError("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ — กำลังลองใหม่");
+    } finally {
+      loadingConversations.current = false;
     }
   }, []);
 
   const pollMessages = useCallback(async () => {
     const id = selectedRef.current;
-    if (!id) return;
+    if (!id || loadingMessages.current) return;
+    loadingMessages.current = true;
 
     try {
       const res = await fetch(`/api/admin/messages?id=${encodeURIComponent(id)}&cursor=${cursor.current}`, {
@@ -63,10 +72,12 @@ export default function AdminInbox() {
 
       cursor.current = data.cursor;
       if (data.messages.length > 0) {
-        setMessages((previous) => [...previous, ...data.messages]);
+        setMessages((previous) => mergeMessages(previous, data.messages));
       }
     } catch {
       // ข้ามรอบนี้ไป
+    } finally {
+      loadingMessages.current = false;
     }
   }, []);
 

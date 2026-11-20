@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Message, SessionUser } from "@/lib/types";
 import Composer from "./Composer";
 import MessageList from "./MessageList";
+import { mergeMessages } from "./mergeMessages";
 
 const POLL_MS = 2000;
 
@@ -11,12 +12,17 @@ export default function ChatWindow({ user }: { user: SessionUser }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const cursor = useRef(0);
+  const loading = useRef(false);
 
   /**
    * ดึงเฉพาะข้อความที่เพิ่มมาหลัง cursor เดิม จึงต่อท้ายได้เลยไม่ซ้ำ
    * (cursor = จำนวนข้อความที่ฝั่งเรามีอยู่แล้ว)
    */
   const poll = useCallback(async () => {
+    // กัน request ซ้อน: ถ้ารอบก่อนยังไม่ตอบ ทั้งคู่จะอ่าน cursor ค่าเดิมแล้วต่อท้ายข้อความซ้ำ
+    if (loading.current) return;
+    loading.current = true;
+
     try {
       const res = await fetch(`/api/chat/messages?cursor=${cursor.current}`, { cache: "no-store" });
       if (!res.ok) return;
@@ -24,10 +30,12 @@ export default function ChatWindow({ user }: { user: SessionUser }) {
       const data = (await res.json()) as { messages: Message[]; cursor: number };
       cursor.current = data.cursor;
       if (data.messages.length > 0) {
-        setMessages((previous) => [...previous, ...data.messages]);
+        setMessages((previous) => mergeMessages(previous, data.messages));
       }
     } catch {
       // เน็ตสะดุดชั่วคราว — รอบถัดไปค่อยลองใหม่
+    } finally {
+      loading.current = false;
     }
   }, []);
 
