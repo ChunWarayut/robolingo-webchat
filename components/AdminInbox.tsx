@@ -2,38 +2,52 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Conversation, Message } from "@/lib/types";
+import ChatHeader from "./ChatHeader";
 import Composer from "./Composer";
 import MessageList from "./MessageList";
-import { mergeMessages } from "./mergeMessages";
+import Sidebar from "./Sidebar";
+import {
+  createPendingMessage,
+  markFailed,
+  mergeMessages,
+  settlePending,
+  type ChatMessage,
+} from "./chatTypes";
 
 const POLL_MS = 2000;
 
-function formatRelative(ts: number): string {
+function lastActiveText(ts: number): string {
   if (!ts) return "";
   const diff = Date.now() - ts;
-  if (diff < 60_000) return "เมื่อครู่";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} นาที`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} ชม.`;
-  return new Date(ts).toLocaleDateString("th-TH", { day: "numeric", month: "short" });
+  if (diff < 120_000) return "ใช้งานเมื่อครู่";
+  if (diff < 3_600_000) return `ใช้งานล่าสุด ${Math.floor(diff / 60_000)} นาทีที่แล้ว`;
+  if (diff < 86_400_000) return `ใช้งานล่าสุด ${Math.floor(diff / 3_600_000)} ชม.ที่แล้ว`;
+  return `ใช้งานล่าสุด ${new Date(ts).toLocaleDateString("th-TH", { day: "numeric", month: "short" })}`;
 }
 
 export default function AdminInbox() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [peerTyping, setPeerTyping] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [loadingConversations, setLoadingConversations] = useState(true);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const cursor = useRef(0);
   // เก็บ id ที่เลือกไว้ใน ref ด้วย เพื่อให้ interval เดิมอ่านค่าล่าสุดได้
   const selectedRef = useRef<string | null>(null);
   // กันไม่ให้ request ซ้อนกัน: ถ้ารอบก่อนยังไม่ตอบ ทั้งคู่จะอ่าน cursor ค่าเดิมแล้วต่อท้ายข้อความซ้ำ
-  const loadingMessages = useRef(false);
-  const loadingConversations = useRef(false);
+  const loadingMessagesRef = useRef(false);
+  const loadingConversationsRef = useRef(false);
 
   const pollConversations = useCallback(async () => {
-    if (loadingConversations.current) return;
-    loadingConversations.current = true;
+    if (loadingConversationsRef.current) return;
+    loadingConversationsRef.current = true;
+
     try {
       const res = await fetch("/api/admin/conversations", { cache: "no-store" });
       if (!res.ok) {
@@ -45,20 +59,22 @@ export default function AdminInbox() {
         );
         return;
       }
+
       const data = (await res.json()) as { conversations: Conversation[] };
       setConversations(data.conversations);
       setConnectionError(null);
     } catch {
       setConnectionError("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ — กำลังลองใหม่");
     } finally {
-      loadingConversations.current = false;
+      loadingConversationsRef.current = false;
+      setLoadingConversations(false);
     }
   }, []);
 
   const pollMessages = useCallback(async () => {
     const id = selectedRef.current;
-    if (!id || loadingMessages.current) return;
-    loadingMessages.current = true;
+    if (!id || loadingMessagesRef.current) return;
+    loadingMessagesRef.current = true;
 
     try {
       const res = await fetch(`/api/admin/messages?id=${encodeURIComponent(id)}&cursor=${cursor.current}`, {
@@ -66,18 +82,24 @@ export default function AdminInbox() {
       });
       if (!res.ok) return;
 
-      const data = (await res.json()) as { messages: Message[]; cursor: number };
+      const data = (await res.json()) as {
+        messages: Message[];
+        cursor: number;
+        peerTyping?: boolean;
+      };
       // กัน race: ถ้าสลับบทสนทนาไปแล้วระหว่างรอ response ให้ทิ้งผลลัพธ์นี้
       if (selectedRef.current !== id) return;
 
       cursor.current = data.cursor;
+      setPeerTyping(Boolean(data.peerTyping));
       if (data.messages.length > 0) {
         setMessages((previous) => mergeMessages(previous, data.messages));
       }
     } catch {
       // ข้ามรอบนี้ไป
     } finally {
-      loadingMessages.current = false;
+      loadingMessagesRef.current = false;
+      setLoadingMessages(false);
     }
   }, []);
 
@@ -100,144 +122,185 @@ export default function AdminInbox() {
     cursor.current = 0;
     setSelectedId(id);
     setMessages([]);
-    setError(null);
+    setPeerTyping(false);
+    setSendError(null);
+    setLoadingMessages(true);
+    setDrawerOpen(false);
     void pollMessages();
   }
 
-  async function reply(text: string) {
+  async function deliver(pending: ChatMessage) {
     const id = selectedRef.current;
     if (!id) return;
-    setError(null);
 
-    const res = await fetch("/api/admin/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, text }),
-    });
+    try {
+      const res = await fetch("/api/admin/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, text: pending.text }),
+      });
 
-    if (!res.ok) {
-      const data = (await res.json().catch(() => null)) as { error?: string } | null;
-      setError(data?.error ?? "ส่งข้อความไม่สำเร็จ");
-      return;
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setSendError(data?.error ?? "ส่งข้อความไม่สำเร็จ");
+        setMessages((previous) => markFailed(previous, pending.id));
+        return;
+      }
+
+      const data = (await res.json()) as { message: Message };
+      setMessages((previous) => settlePending(previous, pending.id, data.message));
+      void pollConversations();
+    } catch {
+      setSendError("เชื่อมต่อไม่ได้ — ข้อความยังไม่ถูกส่ง");
+      setMessages((previous) => markFailed(previous, pending.id));
     }
-
-    await pollMessages();
-    await pollConversations();
   }
 
-  const selected = conversations.find((c) => c.id === selectedId) ?? null;
+  async function send(text: string) {
+    setSendError(null);
+    const pending = createPendingMessage("admin", "line", text);
+    setMessages((previous) => [...previous, pending]);
+    await deliver(pending);
+  }
+
+  function retry(message: ChatMessage) {
+    setSendError(null);
+    setMessages((previous) =>
+      previous.map((item) => (item.id === message.id ? { ...item, status: "sending" as const } : item)),
+    );
+    void deliver(message);
+  }
+
+  function pingTyping() {
+    const id = selectedRef.current;
+    if (!id) return;
+
+    void fetch("/api/typing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+    }).catch(() => undefined);
+  }
+
+  const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
+
+  const sidebar = (
+    <Sidebar
+      conversations={conversations}
+      selectedId={selectedId}
+      onSelect={select}
+      loading={loadingConversations}
+      connectionError={connectionError}
+    />
+  );
 
   return (
-    <div className="flex h-screen bg-neutral-100 dark:bg-neutral-950">
-      {/* ซ้าย: รายชื่อ User ที่คุยเข้ามา */}
-      <aside className="flex w-80 shrink-0 flex-col border-r border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-        <header className="flex items-center justify-between border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
-          <div>
-            <h1 className="text-sm font-semibold">กล่องข้อความ</h1>
-            <p className="text-xs text-neutral-500">{conversations.length} บทสนทนา</p>
-          </div>
-          <form action="/api/auth/logout?scope=admin" method="post">
-            <button type="submit" className="text-xs text-neutral-500 underline hover:text-neutral-700">
-              ออกจากระบบ
-            </button>
-          </form>
-        </header>
-
-        {connectionError && (
-          <p className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">
-            {connectionError}
-          </p>
-        )}
-
-        <div className="flex-1 overflow-y-auto">
-          {conversations.length === 0 && !connectionError && (
-            <p className="p-4 text-xs text-neutral-500">
-              ยังไม่มีใครคุยเข้ามา — ลองเพิ่ม LINE OA เป็นเพื่อนแล้วพิมพ์ทักดู
-            </p>
-          )}
-
-          {conversations.map((conversation) => (
-            <button
-              key={conversation.id}
-              type="button"
-              onClick={() => select(conversation.id)}
-              className={`flex w-full items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left transition hover:bg-neutral-50 dark:border-neutral-800 dark:hover:bg-neutral-800 ${
-                conversation.id === selectedId ? "bg-neutral-100 dark:bg-neutral-800" : ""
-              }`}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={conversation.pictureUrl || "/avatar-placeholder.svg"}
-                alt=""
-                className="h-10 w-10 shrink-0 rounded-full object-cover"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-baseline justify-between gap-2">
-                  <p className="truncate text-sm font-medium">{conversation.displayName}</p>
-                  <span className="shrink-0 text-[11px] text-neutral-400">
-                    {formatRelative(conversation.lastMessageAt)}
-                  </span>
-                </div>
-                <p className="truncate text-xs text-neutral-500">{conversation.lastMessage || "—"}</p>
-              </div>
-              {conversation.unread > 0 && (
-                <span className="shrink-0 rounded-full bg-[#06C755] px-2 py-0.5 text-[11px] font-medium text-white">
-                  {conversation.unread}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+    <div className="flex h-[100dvh] overflow-hidden bg-bg text-fg">
+      {/* เดสก์ท็อป: พับเก็บได้ */}
+      <aside
+        className={`hidden shrink-0 overflow-hidden border-line transition-[width] duration-200 md:block ${
+          sidebarCollapsed ? "w-0 border-r-0" : "w-72 border-r"
+        }`}
+      >
+        <div className="h-full w-72">{sidebar}</div>
       </aside>
 
-      {/* ขวา: บทสนทนาที่เลือก + ช่องตอบกลับ */}
-      <section className="flex min-w-0 flex-1 flex-col">
-        {!selected ? (
-          <div className="flex flex-1 items-center justify-center text-sm text-neutral-500">
-            เลือก User จากรายการด้านซ้ายเพื่อดูและตอบกลับ
-          </div>
-        ) : (
+      {/* มือถือ: drawer เลื่อนทับ */}
+      <div className={`fixed inset-0 z-40 md:hidden ${drawerOpen ? "" : "pointer-events-none"}`}>
+        <button
+          type="button"
+          aria-label="ปิดรายการบทสนทนา"
+          onClick={() => setDrawerOpen(false)}
+          className={`absolute inset-0 bg-black/60 transition-opacity duration-200 ${
+            drawerOpen ? "opacity-100" : "opacity-0"
+          }`}
+        />
+        <div
+          className={`absolute inset-y-0 left-0 w-[86%] max-w-xs border-r border-line shadow-2xl transition-transform duration-200 ${
+            drawerOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+        >
+          {sidebar}
+        </div>
+      </div>
+
+      <main className="flex min-w-0 flex-1 flex-col">
+        {selected ? (
           <>
-            <header className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-800 dark:bg-neutral-900">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={selected.pictureUrl || "/avatar-placeholder.svg"}
-                alt=""
-                className="h-9 w-9 rounded-full object-cover"
-              />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{selected.displayName}</p>
-                <p className="truncate font-mono text-[11px] text-neutral-400">{selected.id}</p>
-              </div>
-              {!selected.followed && (
-                <span className="ml-auto rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800">
-                  เลิกติดตาม OA แล้ว
-                </span>
-              )}
-            </header>
+            <ChatHeader
+              title={selected.displayName}
+              avatarUrl={selected.pictureUrl}
+              online={selected.followed}
+              statusText={selected.followed ? "ออนไลน์" : "เลิกติดตาม OA แล้ว"}
+              subtitle={lastActiveText(selected.lastMessageAt)}
+              leading={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setDrawerOpen(true)}
+                    aria-label="เปิดรายการบทสนทนา"
+                    className="grid h-9 w-9 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-elevated hover:text-fg md:hidden"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
+                      <path d="M3 6h18M3 12h18M3 18h18" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSidebarCollapsed((value) => !value)}
+                    aria-label={sidebarCollapsed ? "แสดงรายการบทสนทนา" : "พับรายการบทสนทนา"}
+                    title={sidebarCollapsed ? "แสดงรายการบทสนทนา" : "พับรายการบทสนทนา"}
+                    className="hidden h-9 w-9 shrink-0 place-items-center rounded-lg text-muted transition hover:bg-elevated hover:text-fg md:grid"
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="4" width="18" height="16" rx="2" />
+                      <path d="M9 4v16" />
+                    </svg>
+                  </button>
+                </>
+              }
+            />
 
             <MessageList
               messages={messages}
               viewer="admin"
-              emptyHint="ยังไม่มีข้อความในบทสนทนานี้"
+              peerName={selected.displayName}
+              peerAvatar={selected.pictureUrl}
+              peerTyping={peerTyping}
+              loading={loadingMessages && messages.length === 0}
+              emptyTitle="ยังไม่มีข้อความ"
+              emptyHint="เริ่มทักได้เลย ข้อความจะถูกส่งเข้าแชท LINE ของผู้ใช้"
+              onRetry={retry}
             />
 
-            {error && (
-              <p className="border-t border-red-200 bg-red-50 px-4 py-2 text-xs text-red-700">{error}</p>
+            {sendError && (
+              <p className="shrink-0 border-t border-line bg-warning-bg px-4 py-2 text-[11.5px] text-warning-fg">
+                {sendError}
+              </p>
             )}
 
             <Composer
-              onSend={reply}
+              onSend={send}
+              onTyping={pingTyping}
               disabled={!selected.followed}
-              placeholder={
-                selected.followed
-                  ? `ตอบกลับ ${selected.displayName}…`
-                  : "ผู้ใช้เลิกติดตาม OA แล้ว ส่งข้อความไม่ได้"
-              }
+              disabledReason="ผู้ใช้เลิกติดตาม OA แล้ว ส่งข้อความไม่ได้"
+              placeholder={`ตอบกลับ ${selected.displayName}…`}
             />
           </>
+        ) : (
+          <>
+            {/* มือถือ: ยังไม่เลือกใคร = โชว์รายการเต็มจอไปเลย ไม่ต้องให้กดเปิด drawer ก่อน */}
+            <div className="min-h-0 flex-1 md:hidden">{sidebar}</div>
+
+            <div className="hidden flex-1 flex-col items-center justify-center gap-2 p-8 text-center md:flex">
+              <p className="text-sm font-medium">ยังไม่ได้เลือกบทสนทนา</p>
+              <p className="max-w-xs text-xs text-muted">
+                เลือก User จากรายการด้านซ้ายเพื่อดูประวัติและตอบกลับ
+              </p>
+            </div>
+          </>
         )}
-      </section>
+      </main>
     </div>
   );
 }

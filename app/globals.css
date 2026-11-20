@@ -1,29 +1,164 @@
 @import "tailwindcss";
 
+/* ---------- design tokens ----------
+   โทนหลักเป็น dark (#09090B) ตามที่ออกแบบไว้ ส่วน light เป็นคู่สีที่ถอดมาจาก token เดียวกัน
+   นิยาม light ไว้ที่ :root เปล่า ๆ แล้ว override เป็น dark สามทาง:
+   - ระบบตั้ง dark และผู้ใช้ไม่ได้เลือกเอง
+   - ผู้ใช้กดเลือก dark (data-theme="dark")
+   เพื่อให้ปุ่มสลับธีมชนะทั้งสองทิศ                                              */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
-  --font-mono: var(--font-geist-mono);
+  --bg: #ffffff;
+  --sidebar: #fafafa;
+  --elevated: #ffffff;
+  --line: #e4e4e7;
+  --fg: #18181b;
+  --muted: #71717a;
+  --faint: #a1a1aa;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-fg: #ffffff;
+  --bubble-peer: #f4f4f5;
+  --online: #22c55e;
+  --danger: #dc2626;
+  --warning-bg: #fef3c7;
+  --warning-fg: #92400e;
+  --code-bg: #f4f4f5;
+  --skeleton: #e4e4e7;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-theme="light"]) {
+    --bg: #09090b;
+    --sidebar: #121215;
+    --elevated: #18181b;
+    --line: #27272a;
+    --fg: #fafafa;
+    --muted: #a1a1aa;
+    --faint: #52525b;
+    --accent: #4f46e5;
+    --accent-hover: #6366f1;
+    --accent-fg: #fafafa;
+    --bubble-peer: #1c1c20;
+    --online: #22c55e;
+    --danger: #f87171;
+    --warning-bg: #2a2111;
+    --warning-fg: #fbbf24;
+    --code-bg: #0c0c0f;
+    --skeleton: #1f1f23;
   }
 }
 
+:root[data-theme="dark"] {
+  --bg: #09090b;
+  --sidebar: #121215;
+  --elevated: #18181b;
+  --line: #27272a;
+  --fg: #fafafa;
+  --muted: #a1a1aa;
+  --faint: #52525b;
+  --accent: #4f46e5;
+  --accent-hover: #6366f1;
+  --accent-fg: #fafafa;
+  --bubble-peer: #1c1c20;
+  --online: #22c55e;
+  --danger: #f87171;
+  --warning-bg: #2a2111;
+  --warning-fg: #fbbf24;
+  --code-bg: #0c0c0f;
+  --skeleton: #1f1f23;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-elevated: var(--elevated);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-fg: var(--accent-fg);
+  --color-bubble-peer: var(--bubble-peer);
+  --color-online: var(--online);
+  --color-danger: var(--danger);
+  --color-warning-bg: var(--warning-bg);
+  --color-warning-fg: var(--warning-fg);
+  --color-code-bg: var(--code-bg);
+  --color-skeleton: var(--skeleton);
+
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
   /* Noto Sans Thai ที่โหลดไว้ครอบคลุมแค่ไทย+ละติน ต่อ fallback ของระบบไว้ด้วย
      ไม่งั้นชื่อโปรไฟล์ LINE ที่มีอักษรนอกสองชุดนี้ (CJK, สัญลักษณ์, อิโมจิ) จะกลายเป็นกล่องเปล่า */
   font-family: var(--font-geist-sans), system-ui, -apple-system, "Segoe UI", Arial, sans-serif,
     "Apple Color Emoji", "Segoe UI Emoji";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* scrollbar ให้กลืนกับพื้นหลังแทนที่จะเป็นแถบขาวตัดโทน */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--line);
+  border: 3px solid transparent;
+  border-radius: 9999px;
+  background-clip: content-box;
+}
+
+/* จุดสามจุดของ typing indicator */
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-3px);
+    opacity: 1;
+  }
+}
+
+.typing-dot {
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+
+@keyframes skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.skeleton {
+  animation: skeleton-pulse 1.6s infinite ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .typing-dot,
+  .skeleton {
+    animation: none;
+  }
 }

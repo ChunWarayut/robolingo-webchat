@@ -2,17 +2,28 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Message, SessionUser } from "@/lib/types";
+import ChatHeader from "./ChatHeader";
 import Composer from "./Composer";
 import MessageList from "./MessageList";
-import { mergeMessages } from "./mergeMessages";
+import {
+  createPendingMessage,
+  markFailed,
+  mergeMessages,
+  settlePending,
+  type ChatMessage,
+} from "./chatTypes";
 
 const POLL_MS = 2000;
 
-export default function ChatWindow({ user }: { user: SessionUser }) {
-  const [messages, setMessages] = useState<Message[]>([]);
+export default function ChatWindow({ user, oaName }: { user: SessionUser; oaName: string }) {
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [peerTyping, setPeerTyping] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [connected, setConnected] = useState(true);
+  const [loading, setLoading] = useState(true);
+
   const cursor = useRef(0);
-  const loading = useRef(false);
+  const polling = useRef(false);
 
   /**
    * ดึงเฉพาะข้อความที่เพิ่มมาหลัง cursor เดิม จึงต่อท้ายได้เลยไม่ซ้ำ
@@ -20,22 +31,34 @@ export default function ChatWindow({ user }: { user: SessionUser }) {
    */
   const poll = useCallback(async () => {
     // กัน request ซ้อน: ถ้ารอบก่อนยังไม่ตอบ ทั้งคู่จะอ่าน cursor ค่าเดิมแล้วต่อท้ายข้อความซ้ำ
-    if (loading.current) return;
-    loading.current = true;
+    if (polling.current) return;
+    polling.current = true;
 
     try {
       const res = await fetch(`/api/chat/messages?cursor=${cursor.current}`, { cache: "no-store" });
-      if (!res.ok) return;
+      if (!res.ok) {
+        setConnected(false);
+        return;
+      }
 
-      const data = (await res.json()) as { messages: Message[]; cursor: number };
+      const data = (await res.json()) as {
+        messages: Message[];
+        cursor: number;
+        peerTyping?: boolean;
+      };
+
       cursor.current = data.cursor;
+      setConnected(true);
+      setPeerTyping(Boolean(data.peerTyping));
       if (data.messages.length > 0) {
         setMessages((previous) => mergeMessages(previous, data.messages));
       }
     } catch {
       // เน็ตสะดุดชั่วคราว — รอบถัดไปค่อยลองใหม่
+      setConnected(false);
     } finally {
-      loading.current = false;
+      polling.current = false;
+      setLoading(false);
     }
   }, []);
 
@@ -49,59 +72,92 @@ export default function ChatWindow({ user }: { user: SessionUser }) {
     };
   }, [poll]);
 
+  async function deliver(pending: ChatMessage) {
+    try {
+      const res = await fetch("/api/chat/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: pending.text }),
+      });
+
+      if (!res.ok) {
+        const data = (await res.json().catch(() => null)) as { error?: string } | null;
+        setNotice(data?.error ?? "ส่งข้อความไม่สำเร็จ");
+        setMessages((previous) => markFailed(previous, pending.id));
+        return;
+      }
+
+      const data = (await res.json()) as { message: Message; warnings?: string[] };
+      setNotice(data.warnings?.length ? data.warnings.join(" · ") : null);
+      setMessages((previous) => settlePending(previous, pending.id, data.message));
+    } catch {
+      setNotice("เชื่อมต่อไม่ได้ — ข้อความยังไม่ถูกส่ง");
+      setMessages((previous) => markFailed(previous, pending.id));
+    }
+  }
+
   async function send(text: string) {
     setNotice(null);
-    const res = await fetch("/api/chat/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
-    });
+    const pending = createPendingMessage("user", "web", text);
+    setMessages((previous) => [...previous, pending]);
+    await deliver(pending);
+  }
 
-    if (!res.ok) {
-      const data = (await res.json().catch(() => null)) as { error?: string } | null;
-      setNotice(data?.error ?? "ส่งข้อความไม่สำเร็จ");
-      return;
-    }
+  function retry(message: ChatMessage) {
+    setNotice(null);
+    setMessages((previous) =>
+      previous.map((item) => (item.id === message.id ? { ...item, status: "sending" as const } : item)),
+    );
+    void deliver(message);
+  }
 
-    const data = (await res.json()) as { warnings?: string[] };
-    if (data.warnings?.length) setNotice(data.warnings.join(" · "));
-
-    // ดึงทันทีเพื่อให้ข้อความขึ้นจอโดยไม่ต้องรอรอบ polling
-    await poll();
+  function pingTyping() {
+    void fetch("/api/typing", { method: "POST" }).catch(() => undefined);
   }
 
   return (
-    <div className="flex h-[calc(100vh-2rem)] max-h-[720px] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-neutral-50 shadow-xl ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-700">
-      <header className="flex items-center gap-3 border-b border-neutral-200 bg-white px-4 py-3 dark:border-neutral-700 dark:bg-neutral-800">
-        {/* ใช้ <img> ตรง ๆ เพื่อไม่ต้องตั้ง remotePatterns ของ next/image และไม่กินโควตา image optimization */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={user.pictureUrl || "/avatar-placeholder.svg"}
-          alt=""
-          className="h-9 w-9 rounded-full object-cover"
-        />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{user.displayName}</p>
-          <p className="text-xs text-neutral-500">คุยกับทีมงานผ่าน LINE OA</p>
-        </div>
-        <form action="/api/auth/logout" method="post">
-          <button type="submit" className="text-xs text-neutral-500 underline hover:text-neutral-700">
-            ออกจากระบบ
-          </button>
-        </form>
-      </header>
+    <div className="flex h-[100dvh] flex-col bg-bg text-fg">
+      <ChatHeader
+        title={oaName}
+        brand
+        online={connected}
+        statusText={connected ? "ออนไลน์" : "ขาดการเชื่อมต่อ"}
+        subtitle={`คุยในชื่อ ${user.displayName}`}
+        trailing={
+          <form action="/api/auth/logout" method="post">
+            <button
+              type="submit"
+              aria-label="ออกจากระบบ"
+              title="ออกจากระบบ"
+              className="grid h-9 w-9 place-items-center rounded-lg text-muted transition hover:bg-elevated hover:text-fg"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
+              </svg>
+            </button>
+          </form>
+        }
+      />
 
       <MessageList
         messages={messages}
         viewer="user"
-        emptyHint={"ยังไม่มีข้อความ\nพิมพ์ทักทีมงานได้เลย ข้อความจะเข้าไปที่ LINE OA"}
+        peerName="ทีมงาน"
+        peerBrand
+        peerTyping={peerTyping}
+        loading={loading && messages.length === 0}
+        emptyTitle="เริ่มคุยกับทีมงานได้เลย"
+        emptyHint={"ข้อความที่พิมพ์ที่นี่จะเข้าไปที่ LINE OA\nและคำตอบจะเด้งกลับมาทั้งที่นี่และในแอป LINE"}
+        onRetry={retry}
       />
 
       {notice && (
-        <p className="border-t border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">{notice}</p>
+        <p className="shrink-0 border-t border-line bg-warning-bg px-4 py-2 text-center text-[11.5px] text-warning-fg">
+          {notice}
+        </p>
       )}
 
-      <Composer onSend={send} placeholder="พิมพ์ข้อความส่งถึงทีมงาน…" />
+      <Composer onSend={send} onTyping={pingTyping} placeholder="พิมพ์ข้อความส่งถึงทีมงาน…" />
     </div>
   );
 }

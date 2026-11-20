@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -29,39 +30,46 @@ export default function AdminLoginPage() {
 
       router.push("/admin");
       router.refresh();
+    } catch {
+      setError("เชื่อมต่อเซิร์ฟเวอร์ไม่ได้");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <main className="flex flex-1 items-center justify-center bg-neutral-100 p-4 dark:bg-neutral-950">
-      <form
-        onSubmit={submit}
-        className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-xl ring-1 ring-neutral-200 dark:bg-neutral-900 dark:ring-neutral-700"
-      >
-        <h1 className="text-lg font-semibold">เข้าสู่ระบบทีมงาน</h1>
-        <p className="mt-2 text-sm text-neutral-500">ใส่รหัสผ่านเพื่อเข้าหน้ากล่องข้อความ</p>
+    <main className="flex h-[100dvh] flex-col bg-bg text-fg">
+      <div className="flex justify-end p-4">
+        <ThemeToggle />
+      </div>
 
-        <input
-          type="password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          autoFocus
-          placeholder="รหัสผ่าน"
-          className="mt-5 w-full rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-[#06C755] dark:border-neutral-600 dark:bg-neutral-800"
-        />
+      <div className="flex flex-1 items-center justify-center px-5 pb-24">
+        <form onSubmit={submit} className="w-full max-w-sm">
+          <div className="mb-6 text-center">
+            <h1 className="text-lg font-semibold tracking-tight">เข้าสู่ระบบทีมงาน</h1>
+            <p className="mt-1.5 text-[13px] text-muted">ใส่รหัสผ่านเพื่อเปิดกล่องข้อความ</p>
+          </div>
 
-        {error && <p className="mt-3 text-xs text-red-600">{error}</p>}
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            autoFocus
+            placeholder="รหัสผ่าน"
+            className="h-11 w-full rounded-xl border border-line bg-elevated px-3.5 text-sm outline-none transition focus:border-accent placeholder:text-faint"
+          />
 
-        <button
-          type="submit"
-          disabled={busy || password.length === 0}
-          className="mt-5 w-full rounded-xl bg-[#06C755] px-4 py-2.5 text-sm font-medium text-white transition hover:brightness-95 disabled:opacity-40"
-        >
-          {busy ? "กำลังตรวจสอบ…" : "เข้าสู่ระบบ"}
-        </button>
-      </form>
+          {error && <p className="mt-2.5 text-center text-xs text-danger">{error}</p>}
+
+          <button
+            type="submit"
+            disabled={busy || password.length === 0}
+            className="mt-4 flex h-11 w-full items-center justify-center rounded-xl bg-accent text-sm font-medium text-accent-fg transition hover:bg-accent-hover disabled:opacity-40"
+          >
+            {busy ? "กำลังตรวจสอบ…" : "เข้าสู่ระบบ"}
+          </button>
+        </form>
+      </div>
     </main>
   );
 }

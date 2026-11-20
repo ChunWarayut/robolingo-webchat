@@ -140,3 +140,19 @@ export async function getMessages(
 
   return { messages, cursor: total };
 }
+
+/* ---------- สถานะกำลังพิมพ์ ----------
+   เก็บเป็น key ที่มี TTL สั้น ๆ ฝั่งที่พิมพ์เขียนทับทุก ๆ ไม่กี่วินาที
+   พอหยุดพิมพ์ key จะหมดอายุไปเอง ไม่ต้องมี event "หยุดพิมพ์" ให้พลาด */
+
+const TYPING_TTL_SECONDS = 6;
+
+const typingKey = (userId: string, who: MessageSender) => `typing:${userId}:${who}`;
+
+export async function setTyping(userId: string, who: MessageSender): Promise<void> {
+  await redis().set(typingKey(userId, who), "1", { ex: TYPING_TTL_SECONDS });
+}
+
+export async function isTyping(userId: string, who: MessageSender): Promise<boolean> {
+  return (await redis().exists(typingKey(userId, who))) === 1;
+}

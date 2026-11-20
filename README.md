@@ -5,6 +5,9 @@
 
 **Next.js 16 (App Router) · TypeScript · Tailwind CSS v4 · Upstash Redis · LINE Messaging API + LINE Login · Vercel**
 
+หน้าจอเป็นดาร์กโหมดเต็มจอ (100dvh) สลับโหมดสว่างได้และจำค่าไว้ ใช้งานได้ทั้งเดสก์ท็อปและมือถือ
+(sidebar พับได้บนเดสก์ท็อป ส่วนมือถือเป็น drawer เลื่อนทับ)
+
 ## แนวคิดหลัก: 1 คน = 1 บทสนทนา
 
 Messaging API channel และ LINE Login channel ถูกสร้างไว้ใน **Provider เดียวกัน** ทำให้ `userId`
@@ -33,8 +36,16 @@ app/
   api/auth/line/{login,callback}/   LINE Login (authorization code flow + state กัน CSRF)
   api/chat/{send,messages}/         ฝั่งผู้ใช้
   api/admin/{conversations,messages,send,login}/
+  api/typing/route.ts               ปักหมุด "กำลังพิมพ์"
 components/
-  ChatWindow.tsx  AdminInbox.tsx  MessageList.tsx  Composer.tsx
+  ChatWindow.tsx      หน้าผู้ใช้ — จัดการ polling, ส่งข้อความ, สถานะกำลังส่ง
+  AdminInbox.tsx      หน้าทีมงาน — sidebar + เธรด + ช่องตอบ
+  Sidebar.tsx         ค้นหา + รายชื่อ User + โปรไฟล์ทีมงาน
+  ChatHeader.tsx      แถบหัวแบบ sticky พร้อมสถานะและปุ่มสลับธีม
+  MessageList.tsx     เส้นคั่นวัน, avatar, เวลา, สถานะส่ง, typing indicator
+  Composer.tsx        ช่องพิมพ์ที่ขยายความสูงเอง + ปุ่มแนบไฟล์ + ปุ่มส่ง
+  chatTypes.ts        รวมข้อความ/กันซ้ำ/สถานะ pending
+  Skeletons.tsx  ThemeToggle.tsx  TypingDots.tsx  Avatar.tsx  BrandMark.tsx
 lib/
   line.ts     verifySignature / pushMessage / replyMessage / getProfile
   store.ts    conversation + message บน Redis
@@ -49,6 +60,7 @@ lib/
 | `conv:index` | ZSET | `conversationId` เรียงด้วย score = เวลาข้อความล่าสุด |
 | `conv:<userId>` | HASH | ชื่อ, รูปโปรไฟล์, ข้อความล่าสุด, จำนวนที่ยังไม่อ่าน, สถานะเป็นเพื่อน |
 | `conv:<userId>:messages` | LIST | ข้อความทั้งเธรดเรียงตามเวลา |
+| `typing:<userId>:<user\|admin>` | STRING (TTL 6 วิ) | สถานะกำลังพิมพ์ — หมดอายุเอง ไม่ต้องมี event "หยุดพิมพ์" |
 
 `conversationId` คือ LINE `userId` ตรง ๆ ไม่มีตาราง mapping
 
@@ -94,6 +106,7 @@ lib/
 | `KV_REST_API_URL` / `KV_REST_API_TOKEN` | ✅ | Upstash integration บน Vercel ใส่ให้เอง |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | — | ใช้แทนคู่บนได้ ถ้าสมัคร Upstash เอง |
 | `ADMIN_LINE_USER_ID` | — | แจ้งเตือนแอดมินใน LINE เมื่อมีคนทักจากเว็บ |
+| `NEXT_PUBLIC_OA_NAME` | — | ชื่อที่โชว์บนหัวแชทฝั่งผู้ใช้ (ค่าเริ่มต้น "ทีมงาน Robolingo") |
 | `NEXT_PUBLIC_BASE_URL` | — | ตั้งเมื่อเดา origin จาก header ไม่ได้ |
 
 ## รันบนเครื่อง
@@ -145,6 +158,10 @@ cloudflared tunnel --url http://localhost:3000
 - **Polling 2 วินาที** ไม่ใช่ realtime จริง — เลือกเพราะ serverless function ของ Vercel
   ถือ WebSocket/SSE ยาว ๆ ไม่ได้ ถ้าจะอัปเกรดคือเปลี่ยนไปใช้ Pusher/Ably แล้วยิง event จาก webhook
 - **ส่งได้แต่ข้อความ text** รูป/สติกเกอร์/ไฟล์ที่ส่งเข้ามาจะเก็บเป็น placeholder เช่น `[สติกเกอร์]`
+- **ปุ่มแนบไฟล์ยังกดไม่ได้ (disabled)** การส่งรูปเข้า LINE ต้องมี URL สาธารณะแบบ HTTPS ให้ LINE มาดึง
+  จึงต้องต่อที่เก็บไฟล์ (เช่น Vercel Blob) ก่อน — ยังไม่อยู่ในขอบเขตของแบบทดสอบนี้
+- **typing indicator ใช้สถานะจริง** ไม่ใช่แอนิเมชันหลอก — ฝั่งที่พิมพ์เขียน key ที่มี TTL 6 วินาที
+  อีกฝั่งเห็นผ่าน polling รอบถัดไป ความแม่นยำจึงอยู่ในระดับ ~2 วินาทีตามรอบ poll
 - **Redis free tier** ไม่ใช่ที่เก็บถาวรระดับ production และไม่มีการลบข้อความเก่าอัตโนมัติ
 - หน้า `/admin` ใช้รหัสผ่านเดียวร่วมกัน ไม่มีระบบ user ของแอดมิน
 - `cacheComponents` ที่ create-next-app เปิดมาให้ถูกปิดไว้ เพราะทุกหน้าของแอปนี้เป็น dynamic
