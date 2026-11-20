@@ -89,6 +89,12 @@ lib/
    - ตั้ง Linked LINE Official Account เป็น OA ข้างบน
 5. กลับไป Messaging API channel → Webhook URL = `https://<โดเมน>/api/line/webhook` → กด **Verify** ต้องขึ้น Success
 
+> ⚠️ **Webhook URL กับ Callback URL เป็นคนละอันและอยู่คนละ channel**
+> `/api/line/webhook` อยู่ที่ Messaging API channel (LINE ยิง POST เข้ามา)
+> `/api/auth/line/callback` อยู่ที่ LINE Login channel (เบราว์เซอร์ถูก redirect กลับด้วย GET)
+> ถ้าใส่สลับกัน อาการจะเป็น "ส่งออกไป LINE ได้ แต่ไม่มีข้อความเข้ามาเลย" เพราะ Push API
+> ไม่ได้ใช้ URL นี้ ส่วน event ทุกตัวจะไปตกที่ปลายทางที่รับแต่ GET
+
 ข้อ 4-5 ต้องใช้โดเมนจริง จึง deploy ขึ้น Vercel ก่อนแล้วเอาโดเมนมากรอก
 
 ## Environment variables
@@ -123,6 +129,7 @@ npm run test:watch
 | `tests/line.test.ts` | ตรวจลายเซ็น webhook — ลายเซ็นถูก/มั่ว/ไม่มี header/secret ผิด/body ถูกแก้ 1 ตัวอักษร/ความยาวไม่เท่ากัน (ต้องไม่ throw จาก `timingSafeEqual`) |
 | `tests/chatTypes.test.ts` | การรวมข้อความ — กันซ้ำด้วย id, ทิ้ง bubble ชั่วคราวเมื่อของจริงมาถึง, เรียงตามเวลา, คืนอาเรย์เดิมเมื่อไม่มีอะไรใหม่ |
 | `tests/rateLimit.test.ts` | การนับครั้ง — ตั้ง TTL เฉพาะครั้งแรก, ขอบเขตที่เพดานพอดี, และ "ปล่อยผ่าน" เมื่อ Redis ล่ม |
+| `tests/store.test.ts` | สถานะการติดตาม — ไม่ถูกเขียนทับเมื่อคนที่บล็อก OA ส่งข้อความจากเว็บ และกลับมาเป็นติดตามเฉพาะเมื่อได้ follow event |
 
 ## รันบนเครื่อง
 
@@ -170,8 +177,10 @@ cloudflared tunnel --url http://localhost:3000
   ต้องตอบจาก `/admin` เท่านั้น — เป็นข้อจำกัดของ Messaging API (OA ไม่ส่ง event ข้อความขาออกของตัวเอง)
   และ Response mode ต้องตั้งเป็น Bot อยู่แล้ว
 - **Push message กินโควตา** ของ OA free plan ส่วน reply (ข้อความต้อนรับ) ไม่กิน
-- **Polling 2 วินาที** ไม่ใช่ realtime จริง — เลือกเพราะ serverless function ของ Vercel
-  ถือ WebSocket/SSE ยาว ๆ ไม่ได้ ถ้าจะอัปเกรดคือเปลี่ยนไปใช้ Pusher/Ably แล้วยิง event จาก webhook
+- **Polling ไม่ใช่ realtime จริง** — เลือกเพราะ serverless function ของ Vercel ถือ WebSocket/SSE
+  ยาว ๆ ไม่ได้ จังหวะปรับตามการมองเห็นแท็บ: ดูอยู่ 1 วินาที ไม่ได้ดู 15 วินาที และดึงทันที
+  ตอนสลับกลับมา ดีเลย์ที่รู้สึกจึงประมาณครึ่งวินาที ถ้าต้องการทันทีจริง ๆ ต้องเปลี่ยนไปใช้
+  Pusher/Ably แล้วยิง event จาก webhook
 - **ส่งได้แต่ข้อความ text** รูป/สติกเกอร์/ไฟล์ที่ส่งเข้ามาจะเก็บเป็น placeholder เช่น `[สติกเกอร์]`
 - **ปุ่มแนบไฟล์ยังกดไม่ได้ (disabled)** การส่งรูปเข้า LINE ต้องมี URL สาธารณะแบบ HTTPS ให้ LINE มาดึง
   จึงต้องต่อที่เก็บไฟล์ (เช่น Vercel Blob) ก่อน — ยังไม่อยู่ในขอบเขตของแบบทดสอบนี้

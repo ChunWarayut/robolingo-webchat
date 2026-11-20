@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { Conversation, Message } from "@/lib/types";
 import ChatHeader from "./ChatHeader";
 import Composer from "./Composer";
 import MessageList from "./MessageList";
 import Sidebar from "./Sidebar";
+import { usePolling } from "./usePolling";
 import {
   createPendingMessage,
   markFailed,
@@ -14,7 +15,8 @@ import {
   type ChatMessage,
 } from "./chatTypes";
 
-const POLL_MS = 2000;
+const ACTIVE_POLL_MS = 1000;
+const HIDDEN_POLL_MS = 15000;
 
 function lastActiveText(ts: number): string {
   if (!ts) return "";
@@ -103,19 +105,14 @@ export default function AdminInbox() {
     }
   }, []);
 
-  useEffect(() => {
-    const tick = () => {
+  usePolling(
+    useCallback(() => {
       void pollConversations();
       void pollMessages();
-    };
-    // ยิงรอบแรกผ่าน timer เหมือนกัน เพื่อไม่ให้ effect body เรียก setState ตรง ๆ
-    const first = setTimeout(tick, 0);
-    const timer = setInterval(tick, POLL_MS);
-    return () => {
-      clearTimeout(first);
-      clearInterval(timer);
-    };
-  }, [pollConversations, pollMessages]);
+    }, [pollConversations, pollMessages]),
+    ACTIVE_POLL_MS,
+    HIDDEN_POLL_MS,
+  );
 
   function select(id: string) {
     selectedRef.current = id;
