@@ -90,6 +90,13 @@ export async function POST(req: Request) {
   const raw = await req.text();
 
   if (!verifySignature(raw, req.headers.get("x-line-signature"))) {
+    // บันทึกไว้ด้วย เพราะ "LINE ไม่ส่งมาเลย" กับ "ส่งมาแล้วแต่ channel secret ไม่ตรง"
+    // ให้ผลที่ปลายทางเหมือนกันทุกอย่าง ต่างกันแค่มีบรรทัดนี้ใน log หรือไม่
+    console.warn(
+      `[line/webhook] ปฏิเสธคำขอ: ลายเซ็นไม่ผ่าน (มี header: ${Boolean(
+        req.headers.get("x-line-signature"),
+      )}, ขนาด body: ${raw.length} bytes) — ถ้าคำขอนี้มาจาก LINE จริง แปลว่า LINE_CHANNEL_SECRET ไม่ตรงกับ channel`,
+    );
     return NextResponse.json({ error: "ลายเซ็นไม่ถูกต้อง" }, { status: 401 });
   }
 
