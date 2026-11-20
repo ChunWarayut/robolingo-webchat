@@ -1,0 +1,142 @@
+import { randomUUID } from "node:crypto";
+import { redis } from "./redis";
+import { getProfile } from "./line";
+import type { Conversation, Message, MessageSender, MessageVia } from "./types";
+
+const INDEX_KEY = "conv:index";
+
+const convKey = (id: string) => `conv:${id}`;
+const msgKey = (id: string) => `conv:${id}:messages`;
+
+function toConversation(id: string, raw: Record<string, unknown> | null): Conversation | null {
+  if (!raw || Object.keys(raw).length === 0) return null;
+  return {
+    id,
+    displayName: String(raw.displayName ?? "ผู้ใช้ LINE"),
+    pictureUrl: String(raw.pictureUrl ?? ""),
+    lastMessage: String(raw.lastMessage ?? ""),
+    lastMessageAt: Number(raw.lastMessageAt ?? 0),
+    unread: Number(raw.unread ?? 0),
+    followed: String(raw.followed ?? "1") !== "0",
+  };
+}
+
+/**
+ * สร้าง/อัปเดต conversation ของ LINE user คนหนึ่ง
+ * ถ้ายังไม่มีชื่อเก็บไว้จะยิง /v2/bot/profile ไปถามแค่ครั้งแรกครั้งเดียว
+ * profileHint ใช้ตอน LINE Login ซึ่งได้ชื่อ+รูปมาแล้ว ไม่ต้องยิง API ซ้ำ
+ */
+export async function ensureConversation(
+  userId: string,
+  profileHint?: { displayName?: string; pictureUrl?: string },
+): Promise<Conversation> {
+  const r = redis();
+  const existing = toConversation(userId, await r.hgetall(convKey(userId)));
+
+  const needsProfile = !existing?.displayName || existing.displayName === "ผู้ใช้ LINE";
+  let displayName = profileHint?.displayName ?? existing?.displayName ?? "";
+  let pictureUrl = profileHint?.pictureUrl ?? existing?.pictureUrl ?? "";
+
+  if (!profileHint && needsProfile) {
+    const profile = await getProfile(userId).catch(() => null);
+    if (profile) {
+      displayName = profile.displayName;
+      pictureUrl = profile.pictureUrl ?? "";
+    }
+  }
+
+  const conversation: Conversation = {
+    id: userId,
+    displayName: displayName || "ผู้ใช้ LINE",
+    pictureUrl,
+    lastMessage: existing?.lastMessage ?? "",
+    lastMessageAt: existing?.lastMessageAt ?? Date.now(),
+    unread: existing?.unread ?? 0,
+    followed: true,
+  };
+
+  await r.hset(convKey(userId), {
+    id: conversation.id,
+    displayName: conversation.displayName,
+    pictureUrl: conversation.pictureUrl,
+    lastMessage: conversation.lastMessage,
+    lastMessageAt: conversation.lastMessageAt,
+    unread: conversation.unread,
+    followed: "1",
+  });
+  await r.zadd(INDEX_KEY, { score: conversation.lastMessageAt, member: userId });
+
+  return conversation;
+}
+
+export async function appendMessage(
+  userId: string,
+  input: { from: MessageSender; via: MessageVia; text: string },
+): Promise<Message> {
+  const r = redis();
+  const message: Message = {
+    id: randomUUID(),
+    from: input.from,
+    via: input.via,
+    text: input.text,
+    ts: Date.now(),
+  };
+
+  await r.rpush(msgKey(userId), JSON.stringify(message));
+  await r.hset(convKey(userId), {
+    lastMessage: message.text.slice(0, 120),
+    lastMessageAt: message.ts,
+  });
+  await r.zadd(INDEX_KEY, { score: message.ts, member: userId });
+
+  // นับเฉพาะข้อความจากผู้ใช้ว่ายังไม่ได้อ่าน (ของแอดมินไม่ต้องนับ)
+  if (input.from === "user") {
+    await r.hincrby(convKey(userId), "unread", 1);
+  }
+
+  return message;
+}
+
+export async function markRead(userId: string): Promise<void> {
+  await redis().hset(convKey(userId), { unread: 0 });
+}
+
+export async function setFollowed(userId: string, followed: boolean): Promise<void> {
+  await redis().hset(convKey(userId), { followed: followed ? "1" : "0" });
+}
+
+export async function getConversation(userId: string): Promise<Conversation | null> {
+  return toConversation(userId, await redis().hgetall(convKey(userId)));
+}
+
+/** รายการบทสนทนาเรียงจากที่มีข้อความใหม่สุด */
+export async function listConversations(limit = 50): Promise<Conversation[]> {
+  const r = redis();
+  const ids = await r.zrange<string[]>(INDEX_KEY, 0, limit - 1, { rev: true });
+  if (ids.length === 0) return [];
+
+  const rows = await Promise.all(ids.map((id) => r.hgetall(convKey(id))));
+  return ids
+    .map((id, i) => toConversation(id, rows[i] as Record<string, unknown> | null))
+    .filter((c): c is Conversation => c !== null);
+}
+
+/**
+ * อ่านข้อความแบบ cursor = จำนวนข้อความที่ client มีอยู่แล้ว
+ * ทำให้ polling ดึงเฉพาะส่วนที่เพิ่มมาจริง ๆ และไม่ต้องกังวลเรื่อง timestamp ชนกัน
+ */
+export async function getMessages(
+  userId: string,
+  cursor = 0,
+): Promise<{ messages: Message[]; cursor: number }> {
+  const r = redis();
+  const total = await r.llen(msgKey(userId));
+  if (cursor >= total) return { messages: [], cursor: total };
+
+  const raw = await r.lrange<string | Message>(msgKey(userId), cursor, -1);
+  const messages = raw
+    .map((item) => (typeof item === "string" ? (JSON.parse(item) as Message) : item))
+    .filter((m): m is Message => Boolean(m?.id));
+
+  return { messages, cursor: total };
+}
